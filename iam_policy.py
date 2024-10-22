@@ -76,10 +76,13 @@ class IAMPolicy:
                 self.iam_client.delete_policy(PolicyArn=self.policy['Arn'])
                 self.policy = None
                 print(f"Policy {self.policy_name} deleted successfully.")
+                return True
             except Exception as e:
                 print(f"Error deleting policy {self.policy_name}: {str(e)}")
+                return False
         else:
             print(f"Policy {self.policy_name} does not exist.")
+            return True  # Consider it deleted if it doesn't exist
 
     def summary(self):
         if self.policy:
@@ -121,3 +124,23 @@ class IAMPolicy:
                 return f"Error retrieving policy summary: {str(e)}"
         else:
             return f"Policy {self.policy_name} does not exist."
+
+    def delete_all_policies(self):
+        policies_to_delete = self.policies.copy()
+        for policy in policies_to_delete:
+            try:
+                if self.remove_policy(policy.policy_name) and policy.delete():
+                    print(f"Policy {policy.policy_name} deleted successfully.")
+                else:
+                    print(f"Failed to delete policy {policy.policy_name}")
+            except Exception as e:
+                print(f"Error deleting policy {policy.policy_name}: {str(e)}")
+        
+        # Double-check if all policies were deleted
+        remaining_policies = self.get_policies()
+        if remaining_policies:
+            print(f"Warning: {len(remaining_policies)} policies could not be deleted.")
+            for policy in remaining_policies:
+                print(f"- {policy.policy_name}")
+        else:
+            print("All policies have been successfully deleted.")

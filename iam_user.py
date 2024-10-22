@@ -5,6 +5,8 @@ class IAMUser:
     def __init__(self, username, create_user_if_required=False):
         self.username = username
         self.iam_client = boto3.client('iam')
+        self.sts_client = boto3.client('sts')
+        self.account_id = self.sts_client.get_caller_identity()["Account"]
         self.user = self._get_user()
         self.policies = []
         
@@ -107,22 +109,18 @@ class IAMUser:
             print(f"User {self.username} does not exist.")
 
     def remove_policy(self, policy_name):
-        if self.user:
-            policy = next((p for p in self.policies if p.policy_name == policy_name), None)
-            if policy:
-                try:
-                    self.iam_client.detach_user_policy(
-                        UserName=self.username,
-                        PolicyArn=policy.policy['Arn']
-                    )
-                    self.policies.remove(policy)
-                    print(f"Policy {policy_name} detached from user {self.username} successfully.")
-                except Exception as e:
-                    print(f"Error detaching policy {policy_name} from user {self.username}: {str(e)}")
-            else:
-                print(f"Policy {policy_name} is not attached to user {self.username}.")
-        else:
-            print(f"User {self.username} does not exist.")
+        try:
+            policy_arn = f"arn:aws:iam::{self.account_id}:policy/{policy_name}"
+            self.iam_client.detach_user_policy(
+                UserName=self.username,
+                PolicyArn=policy_arn
+            )
+            print(f"Policy {policy_name} detached from user {self.username}")
+            self.policies = [p for p in self.policies if p.policy_name != policy_name]
+            return True
+        except Exception as e:
+            print(f"Error detaching policy {policy_name} from user {self.username}: {str(e)}")
+            return False
 
     def list_policies(self):
         return [policy.policy_name for policy in self.policies]
@@ -131,9 +129,32 @@ class IAMUser:
         return self.policies
     
     def delete_all_policies(self):
-        for policy in self.policies:
-            self.remove_policy(policy.policy_name)
-            policy.delete()
+        policies_to_delete = self.policies.copy()
+        all_deleted = True
+        for policy in policies_to_delete:
+            try:
+                if self.remove_policy(policy.policy_name):
+                    if policy.delete():
+                        print(f"Policy {policy.policy_name} deleted successfully.")
+                    else:
+                        print(f"Failed to delete policy {policy.policy_name}")
+                        all_deleted = False
+                else:
+                    all_deleted = False
+            except Exception as e:
+                print(f"Error processing policy {policy.policy_name}: {str(e)}")
+                all_deleted = False
+        
+        remaining_policies = self.get_policies()
+        if remaining_policies:
+            print(f"Warning: {len(remaining_policies)} policies could not be deleted.")
+            for policy in remaining_policies:
+                print(f"- {policy.policy_name}")
+        
+        if all_deleted:
+            print("All policies have been successfully deleted.")
+        else:
+            print("Some policies could not be deleted. Please check the warnings above.")
 
     def access_keys(self, rotate=False):
         # Get the AWS Systems Manager client
@@ -203,4 +224,3 @@ class IAMUser:
         except Exception as e:
             print(f"Error managing access keys for user {self.username}: {str(e)}")
             return None
-
