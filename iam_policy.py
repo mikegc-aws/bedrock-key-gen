@@ -1,17 +1,19 @@
 import boto3
+from datetime import datetime, timezone
 
 class IAMPolicy:
     def __init__(self, policy_name, policy_document=None, description=None):
         self.policy_name = policy_name
         self.iam_client = boto3.client('iam')
+        self.account_id = boto3.client('sts').get_caller_identity().get('Account')
         self.policy = self._get_policy()
-        
+
         if self.policy is None and policy_document:
             self.create(policy_document, description)
 
     def _get_policy(self):
         try:
-            response = self.iam_client.get_policy(PolicyArn=f"arn:aws:iam::aws:policy/{self.policy_name}")
+            response = self.iam_client.get_policy(PolicyArn=f"arn:aws:iam::{self.account_id}:policy/{self.policy_name}")
             return response['Policy']
         except self.iam_client.exceptions.NoSuchEntityException:
             return None
@@ -78,3 +80,44 @@ class IAMPolicy:
                 print(f"Error deleting policy {self.policy_name}: {str(e)}")
         else:
             print(f"Policy {self.policy_name} does not exist.")
+
+    def summary(self):
+        if self.policy:
+            try:
+                policy_version = self.iam_client.get_policy_version(
+                    PolicyArn=self.policy['Arn'],
+                    VersionId=self.policy['DefaultVersionId']
+                )['PolicyVersion']
+                
+                policy_document = policy_version['Document']
+                summary = []
+
+                for statement in policy_document.get('Statement', []):
+                    effect = statement.get('Effect', '').upper()
+                    action = ', '.join(statement.get('Action', [])) if isinstance(statement.get('Action'), list) else statement.get('Action', '')
+                    resources = statement.get('Resource', [])
+                    if not isinstance(resources, list):
+                        resources = [resources]
+
+                    summary.append(f"{effect}: {action}")
+                    for resource in resources:
+                        summary.append(f"- {resource}")
+
+                    condition = statement.get('Condition', {})
+                    date_less_than = condition.get('DateLessThan', {}).get('aws:CurrentTime')
+                    if date_less_than:
+                        expiration_time = datetime.strptime(date_less_than, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                        current_time = datetime.now(timezone.utc)
+                        if expiration_time > current_time:
+                            time_left = expiration_time - current_time
+                            hours_left, remainder = divmod(time_left.total_seconds(), 3600)
+                            minutes_left = remainder // 60
+                            summary.append(f"🕒 Expires in {int(hours_left)} hours and {int(minutes_left)} minutes.")
+                        else:
+                            summary.append("EXPIRED")
+
+                return f"{self.policy_name}\n" + "\n".join(summary) + "\n"
+            except Exception as e:
+                return f"Error retrieving policy summary: {str(e)}"
+        else:
+            return f"Policy {self.policy_name} does not exist."

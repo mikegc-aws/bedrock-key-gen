@@ -1,4 +1,4 @@
-import boto3
+import boto3, json
 from iam_policy import IAMPolicy
 
 class IAMUser:
@@ -126,3 +126,81 @@ class IAMUser:
 
     def list_policies(self):
         return [policy.policy_name for policy in self.policies]
+    
+    def get_policies(self):
+        return self.policies
+    
+    def delete_all_policies(self):
+        for policy in self.policies:
+            self.remove_policy(policy.policy_name)
+            policy.delete()
+
+    def access_keys(self, rotate=False):
+        # Get the AWS Systems Manager client
+        ssm_client = boto3.client('ssm')
+        parameter_name = f"/iam_user/{self.username}/access_keys"
+
+        try:
+            # Try to retrieve existing access keys from Parameter Store
+            response = ssm_client.get_parameter(Name=parameter_name, WithDecryption=True)
+            access_keys = json.loads(response['Parameter']['Value'])
+
+            if rotate:
+
+                # Deactivate the existing access key
+                self.iam_client.update_access_key(
+                    UserName=self.username,
+                    AccessKeyId=access_keys['AccessKeyId'],
+                    Status='Inactive'
+                )
+                print(f"Existing access key {access_keys['AccessKeyId']} deactivated for user {self.username}")
+
+                # Delete the existing access key
+                self.iam_client.delete_access_key(
+                    UserName=self.username,
+                    AccessKeyId=access_keys['AccessKeyId']
+                )
+                print(f"Existing access key {access_keys['AccessKeyId']} deleted for user {self.username}")
+
+                # Create new access key
+                new_key = self.iam_client.create_access_key(UserName=self.username)['AccessKey']
+                
+                # Update Parameter Store with new access key
+                new_access_keys = {
+                    'AccessKeyId': new_key['AccessKeyId'],
+                    'SecretAccessKey': new_key['SecretAccessKey']
+                }
+                ssm_client.put_parameter(
+                    Name=parameter_name,
+                    Value=json.dumps(new_access_keys),
+                    Type='SecureString',
+                    Overwrite=True
+                )
+
+                print(f"Access keys rotated for user {self.username}")
+                return new_access_keys
+            else:
+                return access_keys
+
+        except ssm_client.exceptions.ParameterNotFound:
+            # If no access keys exist, create new ones
+            new_key = self.iam_client.create_access_key(UserName=self.username)['AccessKey']
+            
+            # Store new access keys in Parameter Store
+            new_access_keys = {
+                'AccessKeyId': new_key['AccessKeyId'],
+                'SecretAccessKey': new_key['SecretAccessKey']
+            }
+            ssm_client.put_parameter(
+                Name=parameter_name,
+                Value=json.dumps(new_access_keys),
+                Type='SecureString'
+            )
+
+            print(f"New access keys created for user {self.username}")
+            return new_access_keys
+
+        except Exception as e:
+            print(f"Error managing access keys for user {self.username}: {str(e)}")
+            return None
+

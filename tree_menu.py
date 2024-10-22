@@ -2,14 +2,14 @@ import curses
 from collections import defaultdict
 
 class TreeMenu:
-    def __init__(self, items, include_all=False, title=None, question=None, single_select=False):
+    def __init__(self, items, include_all=True, title=None, question=None, single_select=False):
         self.providers = defaultdict(list)
         self.use_groups = False
         self.include_all = include_all
         self.title = title
         self.question = question
         self.single_select = single_select
-        self.selected_item = None  # For single selection mode
+        self.items = items
         for item in items:
             if 'groupName' in item:
                 self.use_groups = True
@@ -42,7 +42,6 @@ class TreeMenu:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
         
-        # Display title and question
         y = 0
         if self.title:
             stdscr.addstr(y, 0, self.title[:width-1])
@@ -70,7 +69,7 @@ class TreeMenu:
             else:
                 label = item['label'][:width-8]
                 if self.single_select:
-                    selection_indicator = '*' if item['value'] == self.selected_item else ' '
+                    selection_indicator = '*' if item['value'] == self.selected_items else ' '
                 else:
                     selection_indicator = '*' if item['value'] in self.selected_items else ' '
                 label = f"{selection_indicator} {label}"
@@ -84,7 +83,10 @@ class TreeMenu:
             else:
                 stdscr.addstr(y_pos, x, label)
         
-        stdscr.addstr(height-1, 0, "↑↓: Move, →←: Expand/Collapse, Space: Select, Enter: Confirm")
+        if self.single_select:
+            stdscr.addstr(height-1, 0, "↑↓: Move, Enter: Select")
+        else:
+            stdscr.addstr(height-1, 0, "↑↓: Move, →←: Expand/Collapse, Space: Select, Enter: Confirm")
         stdscr.refresh()
 
     def _run_menu(self, stdscr):
@@ -92,7 +94,6 @@ class TreeMenu:
         self.display(stdscr)
 
         while True:
-            height, width = stdscr.getmaxyx()  # Get screen dimensions
             key = stdscr.getch()
             flat_menu = self.get_flat_menu()
             
@@ -104,65 +105,42 @@ class TreeMenu:
                 self.current_selection += 1
                 if self.current_selection >= self.top_line + curses.LINES - 3:
                     self.top_line = self.current_selection - curses.LINES + 4
-            elif key == curses.KEY_RIGHT:
+            elif key == curses.KEY_RIGHT and not self.single_select:
                 if flat_menu[self.current_selection][0] == 'provider':
                     self.expanded.add(flat_menu[self.current_selection][1])
-            elif key == curses.KEY_LEFT:
+            elif key == curses.KEY_LEFT and not self.single_select:
                 if flat_menu[self.current_selection][0] == 'provider':
                     self.expanded.discard(flat_menu[self.current_selection][1])
-            elif key == ord(' '):
-                if self.single_select:
-                    if flat_menu[self.current_selection][0] in ['model', 'all']:
-                        item = flat_menu[self.current_selection][1]
-                        self.selected_item = item['value']
-                else:
-                    if flat_menu[self.current_selection][0] == 'provider':
-                        group = flat_menu[self.current_selection][1]
-                        if group in self.selected_groups:
-                            self.selected_groups.remove(group)
-                            for model in self.providers[group]:
-                                self.selected_items.discard(model['value'])
-                        else:
-                            self.selected_groups.add(group)
-                            for model in self.providers[group]:
-                                self.selected_items.add(model['value'])
-                    elif flat_menu[self.current_selection][0] in ['model', 'all']:
-                        item = flat_menu[self.current_selection][1]
-                        if item['value'] == '*':
-                            if '*' in self.selected_items:
-                                self.selected_items.clear()
-                                self.selected_groups.clear()
-                            else:
-                                self.selected_items = set('*')
-                                self.selected_groups = set(self.providers.keys())
-                        else:
-                            if item['value'] in self.selected_items:
-                                self.selected_items.remove(item['value'])
-                                if 'groupName' in item:
-                                    if all(m['value'] not in self.selected_items for m in self.providers[item['groupName']]):
-                                        self.selected_groups.discard(item['groupName'])
-                            else:
-                                self.selected_items.add(item['value'])
-                                if 'groupName' in item:
-                                    if all(m['value'] in self.selected_items for m in self.providers[item['groupName']]):
-                                        self.selected_groups.add(item['groupName'])
-                            self.selected_items.discard('*')
-                            self.selected_groups.discard('*')
-            elif key in [curses.KEY_ENTER, ord('\n')]:
-                if self.single_select:
-                    if self.selected_item:
-                        return [self.selected_item]
+            elif key == ord(' ') and not self.single_select:
+                item_type, item = flat_menu[self.current_selection]
+                if item_type == 'model':
+                    if item['value'] in self.selected_items:
+                        self.selected_items.remove(item['value'])
                     else:
-                        stdscr.addstr(height-1, 0, "Please select one option (Use the arrow keys to navigate, then select with space).", curses.A_REVERSE)
-                        stdscr.refresh()
-                        stdscr.getch()
-                else:
-                    if self.selected_items:
-                        return list(self.selected_items)
+                        self.selected_items.add(item['value'])
+                elif item_type == 'provider':
+                    if item in self.selected_groups:
+                        self.selected_groups.remove(item)
+                        for model in self.providers[item]:
+                            self.selected_items.discard(model['value'])
                     else:
-                        stdscr.addstr(height-1, 0, "Please select at least one option (Use the arrow keys to navigate, then select with space).", curses.A_REVERSE)
-                        stdscr.refresh()
-                        stdscr.getch()
+                        self.selected_groups.add(item)
+                        for model in self.providers[item]:
+                            self.selected_items.add(model['value'])
+                elif item_type == 'all':
+                    if len(self.selected_items) == len(self.items):
+                        self.selected_items.clear()
+                        self.selected_groups.clear()
+                    else:
+                        self.selected_items = set(item['value'] for item in self.items)
+                        self.selected_groups = set(self.providers.keys())
+            elif key == ord('\n'):  # Enter key
+                if self.single_select:
+                    item_type, item = flat_menu[self.current_selection]
+                    if item_type == 'model':
+                        return [item['value']]
+                elif self.selected_items:
+                    return list(self.selected_items)
             
             self.display(stdscr)
 
